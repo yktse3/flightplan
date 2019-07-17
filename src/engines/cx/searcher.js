@@ -2,8 +2,13 @@ const moment = require('moment-timezone')
 
 const Searcher = require('../../Searcher')
 const { cabins } = require('../../consts')
+const logger = require('../../../shared/logger')
 
 const { errors } = Searcher
+
+function addslashes(str) {
+  return (str + '').replace(/[\]\[\.]/g, '\\\\$&').replace(/\u0000/g, '\\\0');
+}
 
 module.exports = class extends Searcher {
   async isLoggedIn (page) {
@@ -54,26 +59,33 @@ module.exports = class extends Searcher {
     const returnDate = query.returnDateMoment()
 
     // Make sure destination city is cleared
-    await this.clearCity('#input-destination')
+    await this.clearCity('input[name="segments[0].destination"]')
 
     // Set from / to cities
-    await this.setCity('#input-origin', '#results-origin', fromCity)
-    await this.setCity('#input-destination', '#results-destination', toCity)
+    await this.setCity('input[name="segments[0].origin"]', '#react-autowhatever-segments\\[0\\]\\.origin', fromCity)
+    await this.setCity('input[name="segments[0].destination"]', '#react-autowhatever-segments\\[0\\]\\.destination', toCity)
 
     // Set one-way / roundtrip
-    await page.click(oneWay ? '#tab-itinerary-type-oneway span' : '#tab-itinerary-type-return span')
+    await page.click(oneWay ? '#tab-tripType-ow span' : '#tab-tripType-rt span')
     await page.waitFor(500)
 
     // Set dates
     const dates = oneWay ? [departDate] : [departDate, returnDate]
-    const selector = `div.travel-dates-${oneWay ? 'ow' : 'rt'}-wrapper`
+    let selector = `div.travel-dates-${oneWay ? 'ow' : 'rt'}-wrapper`
+    if (oneWay) {
+      selector = '.ibered__form-dp-hit-test-container'
+    }
     for (let i = 0; i < dates.length; i++) {
       // Check if calendar is visible
       try {
-        await page.waitFor('#ui-datepicker-div', { visible: true, timeout: 2000 })
+        await page.waitFor('.DayPicker_title', { visible: true, timeout: 2000 })
       } catch (err) {
         // Don't see calendar, open it up
-        await page.click(`${selector} button:nth-of-type(${i + 1})`)
+        if (oneWay) {
+          await page.click(selector)
+        } else {
+          await page.click(`${selector} button:nth-of-type(${i + 1})`)
+        }
       }
 
       // Choose the date
@@ -81,26 +93,28 @@ module.exports = class extends Searcher {
     }
 
     // Set the cabin
-    const cabinOptions = {
-      [cabins.economy]: 'Y',
-      [cabins.premium]: 'W',
-      [cabins.business]: 'C',
-      [cabins.first]: 'F'
-    }
-    if (!await this.select('#select-cabin', cabinOptions[cabin])) {
+    try {
+      await this.selectCabin(cabin)
+    } catch (err) {
+      console.error(err)
       throw new Searcher.Error(`Could not set cabin to: ${cabin}`)
     }
 
     // Set quantity
-    await page.click('#btn-passengers')
-    await page.waitFor('#select-adult', { visible: true })
-    if (!await this.select('#select-adult', quantity.toString())) {
+    await page.click('#numAdult\\,numChild-value')
+    await page.waitFor('.ibered__form-pms-panel-inner-wrapper', { visible: true, timeout: 10000 })
+    await page.waitFor(500)
+    try {
+      await this.selectAdultNumber(quantity)
+    } catch (err) {
+      console.error(err)
       throw new Searcher.Error(`Could not set # of adults to: ${quantity}`)
+      await page.waitFor(1000000)
     }
 
     // Turn off flexible dates
-    if (await page.$('#flexible-dates:checked')) {
-      await page.click('label[for=flexible-dates]')
+    if (await page.$(`.ibered__form-checkbox-wrapper input:checked`)) {
+      await page.click(`.ibered__form-checkbox-wrapper input:checked ~ label`)
       await page.waitFor(250)
     }
 
@@ -131,7 +145,7 @@ module.exports = class extends Searcher {
 
       // Submit search form
       const response = await Promise.race([
-        this.clickAndWait('button.btn-facade-search'),
+        this.clickAndWait('.ibered__search-form-submit'),
         this.page.waitFor('span.label-error', { visible: true, timeout: 0 })
       ])
       if (response && response.constructor.name !== 'ElementHandle') {
@@ -164,6 +178,15 @@ module.exports = class extends Searcher {
         // If there's a "No flights available" modal pop-up, dismiss it
         await this.clickIfVisible('#flights-not-available-modal button.btn-modal-close')
 
+        // await this.page.waitFor('.flights-filter-button', { visible: true, timeout: 500 })
+        // await this.page.click('.flights-filter-button')
+        // await this.page.waitFor(250) 
+        // await this.page.waitFor('#flights-departure-direct-only', { visible: true, timeout: 500 })
+        // await this.page.click(`label[for=flights-departure-direct-only]`)
+        // await this.page.click(`label[for=flights-departure-available-only]`)
+        // await this.page.waitFor(250)
+        // await this.page.waitFor(10000)
+
         // Obtain flight data
         pageBom.push(await page.evaluate(() => window.pageBom))
 
@@ -172,6 +195,7 @@ module.exports = class extends Searcher {
 
         // Get the selectors of every tab, if not already done
         if (!tabs) {
+          break;
           tabs = await this.findTabs()
           if (!tabs) {
             throw new Searcher.Error(`Failed to locate tab selectors`)
@@ -308,8 +332,8 @@ module.exports = class extends Searcher {
     await page.click(inputSel)
     await this.clear(inputSel)
     await page.waitFor(500)
-    await page.keyboard.type(value, { delay: 100 })
-    const itemSel = selectSel + ` li[data-airportcode=${value}]`
+    await page.keyboard.type(`(${value})`, { delay: 100 })
+    const itemSel = `${selectSel}--item-0`
     await page.waitFor(itemSel, { visible: true, timeout: 10000 })
     await page.click(itemSel)
     await page.waitFor(500)
@@ -326,18 +350,58 @@ module.exports = class extends Searcher {
     } catch (err) {}
   }
 
+  async selectCabin(cabin) {
+    const { page } = this;
+    const cabinOptions = {
+      [cabins.economy]: 0,
+      [cabins.premium]: 1,
+      [cabins.business]: 2,
+      [cabins.first]: 3
+    }
+    let selectID = 2;
+    if (await page.$('#searchHistory') !== null) {
+      selectID = 5;
+    }
+
+    const optionSelector = `#react-select-${selectID}-option-${cabinOptions[cabin]}`;
+    await page.click('#cabinClass')
+    await page.waitFor(500)
+    await page.waitFor('.react-select__menu', { visible: true })
+    await page.waitFor(optionSelector, { visible: true, timeout: 10000 })
+    await page.click(optionSelector)
+    await page.waitFor(500)
+  }
+
+  async selectAdultNumber(quantity) {
+    const { page } = this;
+    await page.click('#numAdult')
+    await page.waitFor(500)
+
+    let inputID = await page.evaluate((sel) => {
+      return document.querySelector(sel).id
+    }, '#numAdult input')
+    const inputIDSplitted = inputID.split('-');
+    inputIDSplitted.splice(inputIDSplitted.length-1, 1);
+    const optionSelector = `#${inputIDSplitted.join('-')}-option-${quantity-1}`;
+
+    await page.waitFor('.react-select__menu', { visible: true, timeout: 10000 })
+    await page.waitFor(optionSelector, { visible: true, timeout: 10000 })
+    await page.click(optionSelector)
+    await page.waitFor(500)
+  }
+
   async setDate (date) {
     let ret, direction
 
     // Move through the calendar page-by-page
     while (true) {
       // Check if the desired date is displayed
-      ret = await this.chooseDate('.ui-datepicker-group-first', date)
+      ret = await this.chooseDate(0, date)
       if (ret.error || ret.success) {
         return ret
       }
       const m1 = ret.month
-      ret = await this.chooseDate('.ui-datepicker-group-last', date)
+      ret = await this.chooseDate(1, date)
       if (ret.error || ret.success) {
         return ret
       }
@@ -346,9 +410,9 @@ module.exports = class extends Searcher {
       // Should move left?
       let btnSel
       if (date.isBefore(m1)) {
-        btnSel = '.ui-datepicker-group-first .ui-datepicker-prev'
-      } else if (date.isAfter(m2.endOf('month'))) {
-        btnSel = '.ui-datepicker-group-last .ui-datepicker-next'
+        btnSel = '.DayPickerNavigation_button_prev .ibered__icons-arrow-left'
+      } else if (date.isSameOrAfter(m1.endOf('month')) || date.isAfter(m2.endOf('month'))) {
+        btnSel = '.DayPickerNavigation_button_next .ibered__icons-arrow-right'
       }
       if (btnSel) {
         if (direction && btnSel !== direction) {
@@ -362,24 +426,26 @@ module.exports = class extends Searcher {
     }
   }
 
-  async chooseDate (selector, date) {
+  async chooseDate (whichCalendar, date) {
     const { page } = this
 
     // Parse out the month first
-    const str = await page.evaluate((sel) => {
-      return document.querySelector(sel).textContent
-    }, selector + ' .ui-datepicker-title')
-    const month = moment.utc(str.replace(/\s+/, ' '), 'MMM YYYY', true)
+    let str = await page.evaluate((sel, whichCalendar) => {
+      return document.querySelectorAll(sel)[whichCalendar].textContent
+    }, '.CalendarMonthGrid_month__horizontal_1:not(.CalendarMonthGrid_month__hidden)', whichCalendar)
+    str = str.replace(/\s+/, ' ').substr(0, 8);
+    const month = moment.utc(str.replace(/\s+/, ' ').substr(0, 8), 'MMM YYYY', true)
 
     // Does the date belong to this month?
-    if (date.month() !== month.month()) {
+    if (date.month() !== month.month() || whichCalendar === 1) {
       return { month, success: false }
     }
 
     // Find the right day, and click it
-    for (const elem of await page.$$(selector + ' a')) {
+    for (const elem of await page.$$('.CalendarMonthGrid_month__horizontal_1:not(.CalendarMonthGrid_month__hidden) td')) {
       const text = await page.evaluate(x => x.textContent, elem)
-      const elemDate = moment.utc(text.replace(/\s+/, ' '), 'dddd MMMM D, YYYY', true)
+      const dateStr = `${text.replace(/\s+/, ' ')} ${str}`
+      const elemDate = moment.utc(dateStr, 'D MMM YYYY', true)
       if (elemDate.isValid() && elemDate.date() === date.date()) {
         // Found the date, click it!
         await elem.click()

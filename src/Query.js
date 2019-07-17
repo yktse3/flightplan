@@ -76,7 +76,7 @@ class Query {
   departDateMoment () {
     const { _state } = this
     if (!_state.hasOwnProperty('departDateMoment')) {
-      _state.departDateMoment = moment(this.departDate)
+      _state.departDateMoment = moment.utc(this.departDate)
     }
     return _state.departDateMoment.clone()
   }
