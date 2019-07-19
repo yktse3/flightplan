@@ -63,6 +63,11 @@ module.exports = class extends Searcher {
 
     // Set from / to cities
     await this.setCity('input[name="segments[0].origin"]', '#react-autowhatever-segments\\[0\\]\\.origin', fromCity)
+    const destination = page.$('input[name="segments[0].destination"]')
+    await page.waitFor(250)
+    while (!page.$('input[name="segments[0].destination"]:disabled')) {
+      await page.waitFor(250)
+    }
     await this.setCity('input[name="segments[0].destination"]', '#react-autowhatever-segments\\[0\\]\\.destination', toCity)
 
     // Set one-way / roundtrip
@@ -432,13 +437,13 @@ module.exports = class extends Searcher {
     // Parse out the month first
     let str = await page.evaluate((sel, whichCalendar) => {
       return document.querySelectorAll(sel)[whichCalendar].textContent
-    }, '.CalendarMonthGrid_month__horizontal_1:not(.CalendarMonthGrid_month__hidden)', whichCalendar)
+    }, '.CalendarMonthGrid_month__horizontal_1:not(.CalendarMonthGrid_month__hidden) .CalendarMonth_caption.CalendarMonth_caption_1', whichCalendar)
     str = str.replace(/\s+/, ' ').substr(0, 8);
-    const month = moment.utc(str.replace(/\s+/, ' ').substr(0, 8), 'MMM YYYY', true)
+    const parsedDate = moment.utc(str.replace(/\s+/, ' ').substr(0, 8), 'MMM YYYY', true)
 
     // Does the date belong to this month?
-    if (date.month() !== month.month() || whichCalendar === 1) {
-      return { month, success: false }
+    if (date.month() !== parsedDate.month() || date.year() !== parsedDate.year() || whichCalendar === 1) {
+      return { month: parsedDate, success: false }
     }
 
     // Find the right day, and click it
@@ -450,7 +455,7 @@ module.exports = class extends Searcher {
         // Found the date, click it!
         await elem.click()
         await page.waitFor(500)
-        return { month, success: true }
+        return { month: parsedDate, success: true }
       }
     }
 
