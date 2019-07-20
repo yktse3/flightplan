@@ -280,8 +280,21 @@ async function redundant (query) {
 }
 
 function redundantSegment (routeMap, query) {
-  const { quantity } = query
+  const { quantity, fromCity, toCity } = query
   if (routeMap) {
+    const findData = routeMap.awards.find(x => {
+      return fromCity === 'HKG' &&
+      toCity === 'HEL' &&
+      x.fromCity === 'HKG' &&
+      x.toCity === 'HEL' &&
+      x.quantity === quantity &&
+      x.stops === 0 &&
+      x.cabin === 'business' &&
+      x.fares !== ''
+    })
+    if (findData) {
+      return false
+    }
     if (routeMap.requests.find(x => x.quantity === quantity)) {
       return true // We've already run a request for this segment
     }
